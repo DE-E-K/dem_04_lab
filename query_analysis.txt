@@ -1,0 +1,185 @@
+# Part 2: Find the Performance Problem 
+
+## QUESTION 1: Monthly Encounters by Specialty
+**Requirement**: For each month and specialty, show total encounters and unique patients by encounter type.
+
+SQL Query:
+EXPLAIN
+SELECT
+    DATE_FORMAT(e.encounter_date, '%Y-%m') AS encounter_month,
+    s.specialty_name,
+    e.encounter_type,
+    COUNT(e.encounter_id) AS total_encounters,
+    COUNT(DISTINCT e.patient_id) AS unique_patients
+FROM encounters e
+JOIN providers p ON e.provider_id = p.provider_id
+JOIN specialties s ON p.specialty_id = s.specialty_id
+GROUP BY
+    encounter_month,
+    s.specialty_name,
+    e.encounter_type
+ORDER BY
+    encounter_month,
+    s.specialty_name;
+
+Schema Analysis:
+Tables joined: [encounters, providers, specialties]
+Number of joins: [2]
+
+Performance: 
+Execution time: [51MS]
+Estimated rows scanned: 
+    - providers: ~3 rows
+    - specialties: ~1 row per provider
+    - encounters: ~1 row per provider
+Total estimated rows scanned: ~5–6 rows
+but Potentially millions, depending on the size of encounters, providers, and specialties tables
+
+Bottleneck Identified:
+The main bottleneck is the use of a computed expression (DATE_FORMAT on encounter_date) 
+in the GROUP BY clause. Because this expression is not indexed, MySQL must create a temporary 
+table and perform a filesort to complete the aggregation and ordering. This is confirmed by 
+the EXPLAIN output showing “Using temporary; Using filesort”. While the impact is minimal for 
+the current dataset size, this could become a performance issue as the encounters table grows larger.
+
+---
+
+## QUESTION 2: Top Diagnosis-Procedure Pairs
+**Requirement**: Most common diagnosis-procedure combinations. Show ICD code, procedure code, and encounter count.
+
+SQL Query:
+EXPLAIN
+SELECT
+    d.icd10_code,
+    pr.cpt_code,
+    COUNT(*) AS combination_count
+FROM encounter_diagnoses ed
+JOIN encounter_procedures ep ON ed.encounter_id = ep.encounter_id
+JOIN diagnoses d ON ed.diagnosis_id = d.diagnosis_id
+JOIN procedures pr ON ep.procedure_id = pr.procedure_id
+GROUP BY
+    d.icd10_code,
+    pr.cpt_code
+ORDER BY
+    combination_count DESC
+LIMIT 10;
+
+Schema Analysis:
+Tables joined: [encounter_diagnoses, encounter_procedures, diagnoses, procedures]
+Number of joins: [3]
+
+Performance:
+Execution time: [18ms]
+Estimated rows scanned:
+    - encounters_procedures (ep): ~4 rows (full table scan)
+    - procedures (pr): 1 row per match (PRIMARY key lookup)
+    - encounter_diagnoses (ed): ~1 row per encounter
+    - diagnoses (d): ~3 rows (full table scan)
+Total estimated rows scanned: ~9 rows
+
+Bottleneck Identified:
+The primary bottleneck comes from full table scans (type = ALL) on two tables:
+    - encounters_procedures (ep)
+    - diagnoses (d)
+Because MySQL cannot find a usable index for the join or filtering conditions on these tables, 
+it scans the entire tables. This leads to:
+
+Creation of a temporary table
+Use of filesort
+Use of a join buffer with hash join for the diagnoses table
+
+Evidence from the EXPLAIN output includes:
+
+    - Using temporary; Using filesort on encounters_procedures
+    - Using join buffer (hash join) on diagnoses
+
+While the performance impact is minimal due to the small dataset size, this approach 
+does not scale well. As these tables grow, the lack of supporting indexes (especially on foreign 
+key columns used in joins) will significantly increase execution time and memory usage.
+
+---
+
+## QUESTION 3: 30-Day Readmission Rate
+**Requirement**: Which specialty has the highest readmission rate? (Inpatient discharge, return within 30 days).
+
+SQL Query:
+EXPLAIN 
+SELECT
+    s.specialty_name,
+    COUNT(DISTINCT e1.patient_id) AS total_discharges,
+    COUNT(DISTINCT e2.patient_id) AS readmitted_patients,
+    (COUNT(DISTINCT e2.patient_id) / COUNT(DISTINCT e1.patient_id)) * 100 AS readmission_rate
+FROM encounters e1
+JOIN providers p 
+    ON e1.department_id = p.department_id
+JOIN specialties s 
+    ON p.specialty_id = s.specialty_id
+LEFT JOIN encounters e2 
+    ON e1.patient_id = e2.patient_id
+    AND e2.encounter_date > e1.discharge_date
+    AND e2.encounter_date <= DATE_ADD(e1.discharge_date, INTERVAL 30 DAY)
+WHERE
+    e1.encounter_type = 'Inpatient'
+    AND e1.discharge_date IS NOT NULL
+GROUP BY s.specialty_name
+ORDER BY readmission_rate DESC;
+
+Schema Analysis:
+Tables joined: [encounters (self-join), providers, specialties]
+Number of joins: [3 (including the self-join)]
+
+Performance:
+Execution time: [110ms]
+Estimated rows scanned:
+    - encounters (e1): ~4 rows (full table scan, 25% filtered)
+    - providers (p): ~1 row per department (indexed lookup)
+    - specialties (s): 1 row per provider (primary key lookup)
+    - encounters (e2): ~1 row per patient (indexed lookup)
+Total estimated rows scanned: ~7–8 rows
+
+Bottleneck Identified:
+The self-join on the `encounters` table is the main performance killer.
+The primary performance issue is a full table scan (type = ALL) on the encounters table used as e1. 
+This occurs because there is no composite index that matches the WHERE clause 
+filters (encounter_type, discharge_date) together with the join column (department_id). 
+As a result, MySQL scans the entire encounters table before applying filters, 
+leading to the use of a temporary table during aggregation. 
+While the dataset is currently small and performance impact is limited, 
+this design will not scale efficiently as the encounters table grows.
+
+---
+
+QUESTION 4: Revenue by Specialty & Month
+SQL Query:
+EXPLAIN 
+SELECT
+    DATE_FORMAT(b.claim_date, '%Y-%m') AS billing_month,
+    s.specialty_name,
+    SUM(b.allowed_amount) AS total_revenue
+FROM billing b
+JOIN encounters e ON b.encounter_id = e.encounter_id
+JOIN providers p ON e.provider_id = p.provider_id
+JOIN specialties s ON p.specialty_id = s.specialty_id
+GROUP BY
+    billing_month,
+    s.specialty_name
+ORDER BY
+    billing_month,
+    total_revenue DESC;
+
+Schema Analysis:
+Tables joined: [billing, encounters, providers, specialties]
+Number of joins: [3]
+
+Performance:
+Execution time: [14ms]
+Estimated rows scanned: [5]
+
+Bottleneck Identified:
+Full Table Scan on 'billing': The EXPLAIN output shows 'type: ALL' for the first table (billing), 
+meaning the database is scanning every row in the table because no index is being utilized for the initial data retrieval.
+Additionally, the 'Extra' column indicates 'Using temporary; Using filesort'. 
+This is caused by the GROUP BY and ORDER BY clauses on the non-indexed calculated column 'billing_month' and 'specialty_name'. 
+While fast now due to only 2 rows in the billing table, this will cause significant latency as the dataset grows.
+
+---
