@@ -1,0 +1,150 @@
+# Star Schema Design Decisions
+
+## Decision 1: Fact Table Grain
+**Choice**
+    Option A: One row per encounter.
+
+**Justification**
+The primary business unit of analysis is the "encounter". 
+- Most key metrics (revenue, duration, counts) are associated with a single encounter.
+- Choosing a finer grain (e.g., one row per diagnosis) would cause 
+"row explosion" and make counting unique encounters or patients difficult and inefficient.
+- This grain directly supports Questions 1, 3, and 4. Question 2 (Diagnosis-Procedure pairs) 
+involves multi-valued attributes, which are best handled via bridge tables 
+rather than altering the fact table grain.
+
+## Decision 2: Dimension Tables
+We will create the following conformed dimensions to support slicing and dicing:
+
+1. **dim_date**
+    - **Columns**: 
+        - date_key (PK), 
+        - date, 
+        - year, 
+        - month, 
+        - month_name, 
+        - quarter, 
+        - day_of_week.
+    - **Justification**
+Solves the performance bottleneck in Question 1 (Monthly Encounters) 
+where DATE_FORMAT() caused full table scans and temporary tables. 
+Pre-computing date attributes allows for efficient grouping and filtering.
+
+2. **dim_patient**
+    - **Columns**: 
+        - patient_key (PK), 
+        - patient_id (NK), 
+        - full_name, 
+        - gender, 
+        - date_of_birth, 
+        - age_group.
+    - **Justification**
+Centralizes patient demographics. Helps in Question 3 (Readmission) 
+and general patient cohort analysis. age_group can be pre-calculated 
+to avoid runtime case statements.
+
+3.  **dim_provider**
+    - **Columns**: 
+        - provider_key (PK), 
+        - provider_id (NK), 
+        - provider_name, 
+        - credential, 
+        - specialty_id (FK), 
+        - department_id (FK).
+    - **Justification**
+Denormalization was not implemented at the schema level. The query analysis 
+showed that performance issues were mainly caused by missing indexes, 
+computed columns in GROUP BY clauses, and self-joins on large tables. 
+These issues can be resolved through indexing and query optimization, 
+making denormalization unnecessary for the current dataset. Denormalization 
+may be considered in the future for reporting or summary tables if 
+data volume increases significantly.
+
+4.  **dim_specialty**
+    - **Columns**: 
+        - specialty_id (PK), 
+        - specialty_name.
+    - **Justification**
+Provides a normalized reference for provider specialties. 
+Keeping this separate ensures consistency across the `dim_provider` 
+table and allows for cleaner aggregation by specialty, adhering to the 
+requirement for distinct dimension attribute sets.
+
+5.  **dim_department**
+    - **Columns**: 
+        - department_id (PK), 
+        - department_name, 
+        - floor.
+    - **Justification**
+Separating department details allows for facility-based analysis (e.g., by floor) 
+independent of provider data. This normalization prevents data redundancy and 
+supports reporting requirements for distinct dimension attributes.
+
+6.  **dim_encounter_type**
+    - **Columns**: 
+        - encounter_type_id (PK), 
+        - encounter_type_name, 
+        - encounter_class.
+    - **Justification**
+Categorizes the setting and nature of the encounter (e.g., Inpatient, Outpatient, Emergency and ER). 
+This facilitates comparative analysis across different healthcare delivery modes and service types.
+
+7.  **dim_diagnosis**
+    - **Columns**: 
+        - diagnosis_id (PK), 
+        - icd_code, 
+        - diagnosis_name, 
+        - category.
+    - **Justification**
+Normalizes clinical diagnosis data, allowing for disease-level reporting and patient 
+cohort segmentation based on standardized ICD classifications.
+
+8.  **dim_procedure**
+    - **Columns**: 
+        - procedure_id (PK), 
+        - procedure_code, 
+        - procedure_name, 
+        - category.
+    - **Justification**
+Supports detailed analysis of medical interventions and treatments. Separating procedures 
+ensures consistency in reporting and cost analysis across various departments.
+
+9.  **dim_payer**
+    - **Columns**: 
+        - payer_key (PK), 
+        - payer_id (NK), 
+        - payer_name, 
+        - payer_type.
+    - **Justification**
+Enables analysis of revenue and claim patterns by insurance provider, directly supporting 
+Question 4. Categorizing by `payer_type` (e.g., Medicare, Private) allows for 
+reimbursement trend analysis and payer mix reporting.
+
+
+## Decision 3: Pre-Aggregated Metrics
+We will include the following metrics directly in `fact_encounters` to reduce join costs:
+
+1.  **Financial Metrics**: `total_claim_amount`, `total_allowed_amount`.
+    - **Justification**: Addresses the bottleneck in Question 4 (Revenue). The OLTP query 
+    required joining the `billing` table and summing. Pre-aggregating these at the encounter 
+    level eliminates the join and allows for instant revenue reporting.
+
+2.  **Counts**: `diagnosis_count`, `procedure_count`.
+    - **Justification**: Allows filtering for "complex encounters" without joining the bridge tables.
+
+3.  **Duration**: `length_of_stay` (days).
+    - **Justification**: Pre-calculated difference between discharge and admission to avoid runtime date math.
+
+## Decision 4: Bridge Tables
+
+**Choice**: Use bridge tables for `diagnoses` and `procedures`.
+
+**Justification**:
+- Encounters have a **Many-to-Many** relationship with Diagnoses and Procedures.
+- Flattening this into the fact table would violate the grain (Decision 1).
+- We will create:
+    - `bridge_encounter_diagnoses` (Keys: `encounter_key`, `diagnosis_key`)
+    - `bridge_encounter_procedures` (Keys: `encounter_key`, `procedure_key`)
+- This structure solves the performance issue in Question 2, avoiding the massive 
+Cartesian product or full scans seen in the OLTP query by allowing targeted joins 
+only when detail analysis is needed.
