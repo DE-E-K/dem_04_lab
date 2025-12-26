@@ -13,6 +13,8 @@ The primary business unit of analysis is the "encounter".
 involves multi-valued attributes, which are best handled via bridge tables 
 rather than altering the fact table grain.
 
+--------------------------------------------------------------------------------
+
 ## Decision 2: Dimension Tables
 We will create the following conformed dimensions to support slicing and dicing:
 
@@ -108,18 +110,7 @@ cohort segmentation based on standardized ICD classifications.
     - **Justification**
 Supports detailed analysis of medical interventions and treatments. Separating procedures 
 ensures consistency in reporting and cost analysis across various departments.
-
-9.  **dim_payer**
-    - **Columns**: 
-        - payer_key (PK), 
-        - payer_id (NK), 
-        - payer_name, 
-        - payer_type.
-    - **Justification**
-Enables analysis of revenue and claim patterns by insurance provider, directly supporting 
-Question 4. Categorizing by `payer_type` (e.g., Medicare, Private) allows for 
-reimbursement trend analysis and payer mix reporting.
-
+--------------------------------------------------------------------------------
 
 ## Decision 3: Pre-Aggregated Metrics
 We will include the following metrics directly in `fact_encounters` to reduce join costs:
