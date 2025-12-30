@@ -221,26 +221,26 @@ SELECT DISTINCT encounter_type, 'General' FROM encounters;
 
 INSERT INTO fact_encounters (encounter_id, patient_key, provider_key, 
                              department_key, admission_date_key, discharge_date_key,
-                              encounter_type_key, length_of_stay, total_allowed_amount, 
-                              diagnosis_count, procedure_count)
+                              encounter_type_key, length_of_stay, total_claim_amount, 
+                              total_allowed_amount, diagnosis_count, procedure_count)
 SELECT e.encounter_id, dp.patient_key, dpr.provider_key, dd.department_key,
     YEAR(e.encounter_date) * 10000 + MONTH(e.encounter_date) * 100 + DAY(e.encounter_date),
     CASE WHEN e.discharge_date IS NOT NULL THEN YEAR(e.discharge_date) * 10000 + MONTH(e.discharge_date) * 100 + DAY(e.discharge_date) ELSE NULL END,
     det.encounter_type_key, DATEDIFF(e.discharge_date, e.encounter_date),
-    COALESCE(b.total_allowed, 0), COALESCE(ed.diag_count, 0), COALESCE(ep.proc_count, 0)
+    COALESCE(b.total_claim, 0), COALESCE(b.total_allowed, 0), COALESCE(ed.diag_count, 0), COALESCE(ep.proc_count, 0)
 FROM encounters e
 JOIN dim_patient dp ON e.patient_id = dp.patient_id
 JOIN dim_provider dpr ON e.provider_id = dpr.provider_id
 LEFT JOIN dim_department dd ON e.department_id = dd.department_id
 JOIN dim_encounter_type det ON e.encounter_type = det.encounter_type_name
-LEFT JOIN (SELECT encounter_id, SUM(allowed_amount) as total_allowed FROM billing GROUP BY encounter_id) b ON e.encounter_id = b.encounter_id
+LEFT JOIN (SELECT encounter_id, SUM(claim_amount) as total_claim, SUM(allowed_amount) as total_allowed FROM billing GROUP BY encounter_id) b ON e.encounter_id = b.encounter_id
 LEFT JOIN (SELECT encounter_id, COUNT(*) as diag_count FROM encounter_diagnoses GROUP BY encounter_id) ed ON e.encounter_id = ed.encounter_id
 LEFT JOIN (SELECT encounter_id, COUNT(*) as proc_count FROM encounter_procedures GROUP BY encounter_id) ep ON e.encounter_id = ep.encounter_id;
 
 -- 2.4 Populate Bridge Tables
 
-INSERT INTO bridge_encounter_diagnoses (encounter_key, diagnosis_key)
-SELECT fe.encounter_key, dd.diagnosis_key FROM encounter_diagnoses ed 
+INSERT INTO bridge_encounter_diagnoses (encounter_key, diagnosis_key, diagnosis_sequence)
+SELECT fe.encounter_key, dd.diagnosis_key, ed.diagnosis_sequence FROM encounter_diagnoses ed 
 JOIN fact_encounters fe ON ed.encounter_id = fe.encounter_id JOIN dim_diagnosis dd ON ed.diagnosis_id = dd.diagnosis_id;
 
 INSERT INTO bridge_encounter_procedures (encounter_key, procedure_key)
