@@ -1,0 +1,224 @@
+# ETL Design Document
+Part 3.4: ETL Logic Design
+
+1. Dimension Load Logic
+
+## Overview
+**Source**: OLTP Tables (`patients`, `encounters`, `billing`, etc.)
+**Target**: Star Schema Tables (`dim_patient`, `fact_encounters`, etc.)
+**Strategy**: One-time Load (Incremental logic described but not implemented).
+
+-- How do you populate dim_date (one-time load)?
+-- This is typically done with a script that generates all dates for a long period (eg. 20 years).
+A. dim_patient
+   - Source: `patients` table.
+   - Logic: 
+     1. Extract all rows from `patients`.
+     2. Calculate `age_group` based on `date_of_birth` and current date (CASE WHEN age < 10 THEN '0-10', ....).
+     3. Insert into `dim_patient`.
+     4. Maintain a mapping of `source.patient_id` -> `dim_patient.patient_key` for Fact loading.
+
+## 1. Dimension Load Logic
+Procedure GenerateDimDate:
+  SET startDate = '2020-01-01'
+  SET endDate = '2040-12-31'
+  currentDate = startDate
+  WHILE currentDate <= endDate:
+    date_key = YEAR(currentDate) * 10000 + MONTH(currentDate) * 100 + DAY(currentDate)
+    INSERT INTO dim_date (date_key, calendar_date, year, quarter, month, ...)
+    VALUES (date_key, currentDate, YEAR(currentDate), QUARTER(currentDate), ...)
+    currentDate = DATE_ADD(currentDate, 1 DAY)
+  END WHILE
+B. dim_date
+   - Source: None (Generated).
+   - Logic:
+     1. Determine date range (e.g., 2020-01-01 to 2030-12-31).
+     2. Loop through dates.
+     3. For each date, derive `year`, `month`, `quarter`, `day_of_week`.
+     4. Generate `date_key` (format YYYYMMDD).
+     5. Insert into `dim_date`.
+
+### dim_date
+- **Source**: Generated sequence.
+- **Logic**: 
+  - Loop from min(encounter_date) to max(encounter_date) + 30 days.
+  - Calculate Year, Month, Quarter, DayOfWeek.
+  - `date_key` format: YYYYMMDD (Integer).
+-- How do you populate other dimension tables (dim_patient, dim_provider, etc.)?
+-- These are loaded from the source OLTP tables.
+C. dim_provider / dim_specialty / dim_department
+   - Logic:
+     1. Load `dim_specialty` and `dim_department` first from source tables.
+     2. Load `dim_provider` from `providers` table.
+     3. Lookup `specialty_key` and `department_key` using the source IDs.
+
+### dim_patient
+- **Source**: `patients` table.
+- **Logic**:
+  ```sql
+  INSERT INTO dim_patient (patient_id, full_name, date_of_birth, gender, mrn, age_group)
+  SELECT 
+    patient_id, 
+    CONCAT(first_name, ' ', last_name), 
+    date_of_birth, 
+    gender, 
+    mrn,
+    CASE 
+      WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) < 5 THEN '0-4'
+      WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) < 15 THEN '5-14'
+      WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) < 45 THEN '15-44'
+      WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) < 65 THEN '45-64'
+      WHEN TIMESTAMPDIFF(YEAR, date_of_birth, CURDATE()) < 75 THEN '65-74'
+      ELSE '75+'
+    END AS age_group
+  FROM patients;
+  ```
+Procedure LoadDimPatient:
+  -- Extracts unique patients from the source and loads them.
+  INSERT INTO dim_patient (patient_id, first_name, last_name, ...)
+  SELECT DISTINCT patient_id, first_name, last_name, ...
+  FROM source.patients
+  ON CONFLICT (patient_id) DO NOTHING; -- Or DO UPDATE for changes
+D. dim_diagnosis / dim_procedure
+   - Logic: Extract unique codes from `diagnoses` and `procedures` tables. Assign categories based on code ranges.
+
+### dim_provider
+- **Source**: `providers` JOIN `specialties` JOIN `departments`.
+- **Logic**:
+  - Denormalize Specialty and Department names into the provider dimension (Type 1 or 2 SCD). For this lab, we use Type 1 (overwrite).
+-- (Similar procedures for dim_specialty, dim_department, dim_diagnosis, dim_procedure)
+--------------------------------------------------------------------------------
+2. Fact Table Load Logic (fact_encounters)
+
+### dim_specialty / dim_department
+- **Source**: `specialties`, `departments`
+- **Logic**: Direct mapping.
+Procedure LoadDimProvider:
+  -- Extracts providers and looks up foreign keys for denormalized attributes.
+  INSERT INTO dim_provider (provider_id, provider_name, specialty_key, department_key)
+  SELECT
+    p.provider_id,
+    p.first_name || ' ' || p.last_name,
+    ds.specialty_key,
+    dd.department_key
+  FROM source.providers p
+  LEFT JOIN dim_specialty ds ON p.specialty_id = ds.specialty_id
+  LEFT JOIN dim_department dd ON p.department_id = dd.department_id
+  ON CONFLICT (provider_id) DO UPDATE SET ...; -- Handle updates
+   - Source: `encounters` joined with `billing`.
+   - Transformation Steps:
+     1. Iterate through `encounters`.
+     2. **Key Lookups**:
+        - Lookup `patient_key` using `patient_id`.
+        - Lookup `provider_key` using `provider_id`.
+        - Lookup `department_key` using `department_id`.
+        - Calculate `admission_date_key` from `encounter_date`.
+        - Calculate `discharge_date_key` from `discharge_date`.
+     3. **Metrics Calculation**:
+        - `length_of_stay`: DATEDIFF(discharge_date, encounter_date). Handle NULLs for active cases.
+        - `total_allowed_amount`: Join with `billing` table on `encounter_id` and SUM(`allowed_amount`).
+        - `diagnosis_count`: Count rows in `encounter_diagnoses` for this `encounter_id`.
+        - `procedure_count`: Count rows in `encounter_procedures` for this `encounter_id`.
+     4. Insert into `fact_encounters`.
+
+## 2. Fact Table Load Logic (`fact_encounters`)
+- **Source**: `encounters` linked to `billing`.
+- **Lookups**: Join dimensions on natural keys to get surrogate keys.
+- **Metrics**: 
+  - `length_of_stay`: DATEDIFF(discharge_date, encounter_date)
+  - `claim_amount`: Look up from `billing` table.
+  - `diagnosis_count`: Subquery or join to count `encounter_diagnoses`.
+  - `procedure_count`: Subquery or join to count `encounter_procedures`.
+-- How do you handle updates to dimensions?
+-- This requires a strategy for Slowly Changing Dimensions (SCD).
+-- For this project, we can use SCD Type 1: Overwrite the existing record.
+-- The `ON CONFLICT...DO UPDATE` clause in PostgreSQL or `MERGE` in other SQL dialects handles this.
+-- For example, if a patient's last name changes, we update it in `dim_patient`.
+   - Handling Missing Data:
+     - If a dimension key is not found (e.g., unknown provider), assign to a default "Unknown" record (Key -1 or 0) in the dimension table to preserve referential integrity.
+
+- **Pseudocode**:
+  ```sql
+  INSERT INTO fact_encounters (...)
+2. Fact Table Load Logic
+
+Procedure LoadFactEncounters:
+  -- For each encounter in the source, look up dimension keys and calculate metrics.
+  INSERT INTO fact_encounters (encounter_id, patient_key, provider_key, ..., total_allowed_amount, diagnosis_count)
+  SELECT
+    e.encounter_id,
+    d_adm.date_key AS admission_date_key,
+    d_dis.date_key AS discharge_date_key,
+    dp.patient_key,
+    dpr.provider_key,
+    ...
+    b.claim_amount,
+    b.allowed_amount,
+    (SELECT COUNT(*) FROM encounter_diagnoses ed WHERE ed.encounter_id = e.encounter_id),
+    (SELECT COUNT(*) FROM encounter_procedures ep WHERE ep.encounter_id = e.encounter_id)
+  FROM encounters e
+  LEFT JOIN billing b ON e.encounter_id = b.encounter_id
+  JOIN dim_date d_adm ON DATE(e.encounter_date) = d_adm.full_date
+  LEFT JOIN dim_date d_dis ON DATE(e.discharge_date) = d_dis.full_date
+    -- Pre-aggregated metrics
+    (SELECT SUM(allowed_amount) FROM source.billing b WHERE b.encounter_id = e.encounter_id) AS total_allowed_amount,
+    (SELECT COUNT(*) FROM source.encounter_diagnoses ed WHERE ed.encounter_id = e.encounter_id) AS diagnosis_count,
+    -- Look up dimension keys
+  FROM source.encounters e
+  JOIN dim_patient dp ON e.patient_id = dp.patient_id
+  ...
+  ```
+  JOIN dim_provider dpr ON e.provider_id = dpr.provider_id
+  JOIN dim_date dd_enc ON e.encounter_date = dd_enc.calendar_date
+  LEFT JOIN dim_date dd_dis ON e.discharge_date = dd_dis.calendar_date;
+
+## 3. Bridge Table Load Logic
+- **bridge_encounter_diagnoses**:
+  - Source: `encounter_diagnoses`.
+  - Join `encounters` and `diagnoses` to get surrogate keys (`encounter_key`, `diagnosis_key`).
+- **bridge_encounter_procedures**:
+  - Similar logic with `encounter_procedures`.
+--------------------------------------------------------------------------------
+3. Bridge Table Load Logic
+
+## 4. Refresh Strategy
+- **Initial Load**: Truncate and reload all tables.
+- **Incremental**: 
+  - Identify new rows in source by `created_at` or `updated_at`.
+  - Insert missing dimensions first.
+  - Insert new facts.
+Procedure LoadBridgeTables:
+  -- Populate bridge tables after the fact table is loaded.
+  INSERT INTO bridge_encounter_diagnoses (encounter_key, diagnosis_key, diagnosis_sequence)
+  SELECT
+    fe.encounter_key,
+    dd.diagnosis_key,
+    sed.diagnosis_sequence
+  FROM source.encounter_diagnoses sed
+  JOIN fact_encounters fe ON sed.encounter_id = fe.encounter_id
+  JOIN dim_diagnosis dd ON sed.diagnosis_id = dd.diagnosis_id;
+A. bridge_encounter_diagnoses
+   - Source: `encounter_diagnoses`.
+   - Logic:
+     1. Join `encounter_diagnoses` with `fact_encounters` (to get `encounter_key`) and `dim_diagnosis` (to get `diagnosis_key`).
+     2. Insert `encounter_key`, `diagnosis_key`, and `diagnosis_sequence`.
+
+  -- (Similar logic for bridge_encounter_procedures)
+B. bridge_encounter_procedures
+   - Similar logic using `encounter_procedures` and `dim_procedure`.
+
+--------------------------------------------------------------------------------
+4. Refresh Strategy
+
+-- How often would you load?
+-- Daily incremental loads are a common strategy. This captures new data from the previous day without having to reload the entire history.
+
+-- How would you handle late-arriving facts?
+-- Late-arriving facts (e.g., a billing claim that arrives weeks after the encounter) are a classic ETL challenge.
+-- A robust approach is to re-process or update the fact records for a certain window of time. For example, during each daily load, we can re-calculate metrics for all encounters in the last 30-60 days. This ensures that late data is correctly incorporated into the fact table.
+   - **Frequency**: Daily (Overnight batch).
+   - **Method**: Incremental Load.
+     - Identify new or modified encounters since last `max(encounter_id)` or `last_updated` timestamp.
+     - Update Dimensions first (if new patients/providers appear).
+     - Insert new Fact rows.
+     - Late-arriving facts: If an encounter arrives with a date that doesn't exist in `dim_date` (unlikely if pre-populated), extend `dim_date`. If it references a patient not yet in `dim_patient`, create a placeholder patient record.
