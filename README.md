@@ -87,13 +87,13 @@ The new schema enables optimized queries (`star_schema_qa.sql`):
 ## 5. Verified Performance Benchmarks
 The following benchark results (`bench_perf.py`) confirm the performance improvements on the local dataset
 
-Query Name                         | Avg Time (s)    | Min (s)    | Max (s)
-:----------------------------------|----------------:|-----------:|---------
-1. Monthly Encounters (OLTP)       | 0.0830          | 0.0712     | 0.0931
-1. Monthly Encounters (Star)       | 0.0820          | 0.0695     | 0.1010
-2. Top Diagnosis-Procedure (OLTP)  | 0.0718          | 0.0502     | 0.0998
-2. Top Diagnosis-Procedure (Star)  | 0.0661          | 0.0504     | 0.0878
-3. Readmission Rate (OLTP)         | 0.0626          | 0.0462     | 0.0696
-3. Readmission Rate (Star)         | 0.0488          | 0.0367     | 0.0571
-4. Revenue (OLTP)                  | 0.1420          | 0.1057     | 0.1627
-4. Revenue (Star)                  | 0.1118          | 0.0940     | 0.1379
+|Query Name                         | Avg Time (s)    | Min (s)    | Max (s) |
+|:----------------------------------|----------------:|-----------:|---------|
+|1. Monthly Encounters (OLTP)       | 0.0830          | 0.0712     | 0.0931  |
+|1. Monthly Encounters (Star)       | 0.0820          | 0.0695     | 0.1010  |
+|2. Top Diagnosis-Procedure (OLTP)  | 0.0718          | 0.0502     | 0.0998  |
+|2. Top Diagnosis-Procedure (Star)  | 0.0661          | 0.0504     | 0.0878  |
+|3. Readmission Rate (OLTP)         | 0.0626          | 0.0462     | 0.0696  | 
+|3. Readmission Rate (Star)         | 0.0488          | 0.0367     | 0.0571  |
+|4. Revenue (OLTP)                  | 0.1420          | 0.1057     | 0.1627  | 
+|4. Revenue (Star)                  | 0.1118          | 0.0940     | 0.1379  |
