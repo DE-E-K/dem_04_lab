@@ -27,13 +27,13 @@ Tables joined: [encounters, providers, specialties]
 Number of joins: [2]
 
 Performance: 
-Execution time: [51MS]
+Execution time: 199MS = 0.199s
 Estimated rows scanned: 
-    - providers: ~3 rows
-    - specialties: ~1 row per provider
-    - encounters: ~1 row per provider
-Total estimated rows scanned: ~5–6 rows
-but Potentially millions, depending on the size of encounters, providers, and specialties tables
+    - providers: 1 rows
+    - specialties: 1 row per provider
+    - encounters: ALL row per provider
+Total estimated rows scanned: all rows in encounters table + 1 rows in providers table + 1 row in specialties table
+but Potentially millions, depending on the size of encounters
 
 Bottleneck Identified:
 The main bottleneck is the use of a computed expression (DATE_FORMAT on encounter_date) 
@@ -69,7 +69,7 @@ Tables joined: [encounter_diagnoses, encounter_procedures, diagnoses, procedures
 Number of joins: [3]
 
 Performance:
-Execution time: [18ms]
+Execution time: 43ms = 0.043s
 Estimated rows scanned:
     - encounters_procedures (ep): ~4 rows (full table scan)
     - procedures (pr): 1 row per match (PRIMARY key lookup)
@@ -129,12 +129,12 @@ Tables joined: [encounters (self-join), providers, specialties]
 Number of joins: [3 (including the self-join)]
 
 Performance:
-Execution time: [110ms]
+Execution time: 132ms = 0.132s
 Estimated rows scanned:
-    - encounters (e1): ~4 rows (full table scan, 25% filtered)
-    - providers (p): ~1 row per department (indexed lookup)
+    - encounters (e1): 1382 rows (full table scan, 9% filtered)
+    - providers (p): 1 row per department (indexed lookup)
     - specialties (s): 1 row per provider (primary key lookup)
-    - encounters (e2): ~1 row per patient (indexed lookup)
+    - encounters (e2): 1 row per patient (indexed lookup)
 Total estimated rows scanned: ~7–8 rows
 
 Bottleneck Identified:
@@ -172,8 +172,12 @@ Tables joined: [billing, encounters, providers, specialties]
 Number of joins: [3]
 
 Performance:
-Execution time: [14ms]
-Estimated rows scanned: [5]
+Execution time: 39ms = 0.039s
+Estimated rows scanned:
+    - providers (p): 1 row per encounter
+    - specialties (s): 1 row per provider
+    - encounters (e): 14382
+    - billing (b): 1 billing
 
 Bottleneck Identified:
 Full Table Scan on 'billing': The EXPLAIN output shows 'type: ALL' for the first table (billing), 
