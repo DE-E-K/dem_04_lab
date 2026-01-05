@@ -1,6 +1,8 @@
+-- Active: 1767084789057@@127.0.0.1@3306@healthcare_db
 USE healthcare_db;
 -- For each month and specialty, show total encounters and unique patients by encounter type
-EXPLAIN SELECT
+EXPLAIN
+SELECT
     DATE_FORMAT(e.encounter_date, '%Y-%m') AS encounter_month,
     s.specialty_name,
     e.encounter_type,
