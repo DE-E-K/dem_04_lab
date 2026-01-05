@@ -1,10 +1,11 @@
--- Active: 1767167508963@@127.0.0.1@3306@healthcare_db
+-- Active: 1767084789057@@127.0.0.1@3306@healthcare_db
 use healthcare_db;
 
 -- QUESTION 1: Monthly Encounters by Specialty
-EXPLAIN SELECT
+EXPLAIN
+SELECT
     d.year,
-    d.month_name,
+    d.month,
     p.specialty_name,
     et.encounter_type_name,
     COUNT(f.encounter_key) AS total_encounters,
@@ -15,12 +16,12 @@ JOIN dim_provider p ON f.provider_key = p.provider_key
 JOIN dim_encounter_type et ON f.encounter_type_key = et.encounter_type_key
 GROUP BY
     d.year,
-    d.month_name,
+    d.month,
     p.specialty_name,
     et.encounter_type_name;
 
 -- QUESTION 2: Top Diagnosis-Procedure Pairs
-SELECT
+EXPLAIN SELECT
     dd.icd_code,
     dp.cpt_code,
     COUNT(*) AS combination_count
